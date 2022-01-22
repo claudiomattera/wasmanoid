@@ -1,0 +1,8 @@
+[workspace]
+members = [
+    "game",
+]
+
+[profile.release]
+opt-level = "z"
+lto = "fat"

@@ -1,0 +1,172 @@
+[config]
+default_to_workspace = false
+skip_core_tasks = true
+
+[tasks.fetch]
+script = '''
+cargo fetch --locked
+'''
+
+[tasks.check-format]
+dependencies = ["fetch"]
+script = '''
+cargo fmt --all -- --check
+'''
+
+[tasks.format]
+dependencies = ["fetch"]
+script = '''
+cargo fmt --all --
+'''
+
+[tasks.lint]
+dependencies = ["fetch"]
+script = '''
+cargo clippy --frozen --target=wasm32-unknown-unknown --all-features
+'''
+
+[tasks.check]
+dependencies = ["fetch"]
+script = '''
+cargo check --frozen --all-features
+'''
+
+[tasks.build]
+dependencies = ["fetch"]
+script = '''
+cargo build --frozen --all-features
+'''
+
+[tasks.build-tests]
+dependencies = ["fetch"]
+script = '''
+cargo test --frozen --target=x86_64-unknown-linux-gnu  --all-features --no-run
+'''
+
+[tasks.test]
+dependencies = ["build-tests"]
+script = '''
+cargo test --frozen --target=x86_64-unknown-linux-gnu  --all-features
+'''
+
+[tasks.prepare-cache]
+script = '''
+find ./target/debug -maxdepth 1 -type f -and -not -name xtask.exe -delete
+rm -rf ./target/.rustc_info.json
+mkdir -p output
+'''
+
+[tasks.run]
+dependencies = ["build"]
+script = '''
+w4 run-native "target/wasm32-unknown-unknown/debug/cartridge.wasm"
+'''
+
+[tasks.run-release]
+dependencies = ["build-release"]
+script = '''
+w4 run-native "target/wasm32-unknown-unknown/release/cartridge.wasm"
+'''
+
+[tasks.test-intersections]
+dependencies = ["build-test-intersections"]
+script = '''
+w4 run-native "target/wasm32-unknown-unknown/release/cartridge.wasm"
+'''
+
+[tasks.run-optimized]
+dependencies = ["strip-debug-information"]
+script = '''
+w4 run-native "./output/cartridge.wasm"
+'''
+
+[tasks.run-release-browser]
+dependencies = ["build-release"]
+script = '''
+w4 run "target/wasm32-unknown-unknown/release/cartridge.wasm"
+'''
+
+[tasks.run-optimized-browser]
+dependencies = ["strip-debug-information"]
+script = '''
+w4 run "./output/cartridge.wasm"
+'''
+
+[tasks.build-release]
+script = '''
+cargo build --release --frozen --features storage,skip
+'''
+
+[tasks.build-test-intersections]
+script = '''
+cargo build --release --frozen --features storage,skip,test-intersections
+'''
+
+[tasks.build-optimized]
+script = '''
+cargo build --release --frozen --no-default-features --features storage
+'''
+
+[tasks.clean-release]
+script = '''
+cargo clean --release --frozen
+'''
+
+[tasks.clean]
+script = '''
+cargo clean --frozen
+rm -rf output
+'''
+
+[tasks.doc]
+script = '''
+cargo doc --frozen --no-deps --lib --all-features --workspace --exclude "*example*"
+'''
+
+[tasks.strip-debug-information]
+dependencies = ["build-optimized"]
+script = '''
+mkdir -p output
+wasm-snip --snip-rust-panicking-code --snip-rust-fmt-code --output ./output/snipped.wasm target/wasm32-unknown-unknown/release/cartridge.wasm
+wasm-gc ./output/snipped.wasm ./output/garbage_collected.wasm
+wasm-opt -Oz -o ./output/optimized.wasm ./output/garbage_collected.wasm
+cp ./output/optimized.wasm ./output/cartridge.wasm
+'''
+
+[tasks.bundle-into-cartridge]
+dependencies = ["strip-debug-information"]
+command = "w4"
+args = [
+    "bundle", "./output/cartridge.wasm",
+    "--title", "Wasmanoid",
+    "--description", "An Arkanoid clone for WASM-4 fantasy console",
+    "--timestamp",
+    "--html",
+    "./output/cartridge.html",
+]
+
+[tasks.audit]
+script = '''
+cargo audit --deny unsound --deny yanked
+'''
+
+[tasks.print-cartridge-size]
+dependencies = ["strip-debug-information"]
+script = '''
+twiggy top ./output/garbage_collected.wasm
+'''
+
+[tasks.compare-cartridges]
+dependencies = ["strip-debug-information"]
+script = '''
+twiggy diff "${1}" "${2}"
+'''
+
+[tasks.verify-cartridge-size]
+dependencies = ["strip-debug-information"]
+script = '''
+SIZE=`stat --printf=%s ./output/optimized.wasm`
+SIZE_KIB=$(awk "BEGIN {printf \"%.2f\",${SIZE}/1024}")
+printf "Cartridge size: %.02f KiB (%d bytes)\n" $SIZE_KIB $SIZE
+test $SIZE -lt 65536
+'''

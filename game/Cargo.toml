@@ -1,0 +1,59 @@
+[package]
+name = "cartridge"
+version = "1.0.0"
+authors = ["Claudio Mattera <dev@claudiomattera.it>"]
+edition = "2021"
+description = "An Arkanoid clone for WASM-4 fantasy console"
+readme = "Readme.md"
+homepage = "https://gitlab.com/claudiomattera/wasmanoid"
+repository = "https://gitlab.com/claudiomattera/wasmanoid"
+license = "MPL-2.0"
+keywords = [
+    "games",
+]
+categories = [
+    "games",
+]
+publish = false
+
+[package.metadata.docs.rs]
+all-features = true
+default-target = "x86_64-unknown-linux-gnu"
+
+[features]
+default = ["debug", "storage"]
+debug = ["wasm4fun-log/debug"]
+storage = ["serde", "wasm4fun-storage/storage", "tinyvec/serde"]
+skip = []
+test-intersections = []
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+wasm4fun-core = { version = "0.1.0" }
+wasm4fun-fmt = { version = "0.1.0" }
+wasm4fun-graphics = { version = "0.1.0" }
+wasm4fun-input = { version = "0.1.0" }
+wasm4fun-log = { version = "0.1.0", default-features = false }
+wasm4fun-logo = { version = "0.1.0" }
+wasm4fun-panichandler = { version = "0.1.0" }
+wasm4fun-random = { version = "0.1.0" }
+wasm4fun-sound = { version = "0.1.0" }
+wasm4fun-storage = { version = "0.1.0", default-features = false }
+wasm4fun-time = { version = "0.1.0" }
+
+# uom = { version = "0.32", default-features = false, features = ["f32", "si"] }
+
+micromath = { version = "2", default-features = false }
+
+tinyvec = { version = "1", default-features = false }
+
+buddy-alloc = { version = "0.4.1", default-features = false, optional = true }
+
+serde = { version = "1", default-features = false, features = ["derive"], optional = true }
+
+[dev-dependencies]
+
+[build-dependencies]
+png2wasm4src = { version = "0.1" }

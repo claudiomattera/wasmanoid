@@ -1,0 +1,397 @@
+---
+kind: pipeline
+type: docker
+name: build and test
+environment:
+  CARGO_INCREMENTAL: 0
+  CARGO_NET_RETRY: 10
+  CARGO_HOME: "./.cargo_home/"
+trigger:
+  event:
+    include:
+    - push
+    exclude:
+    - tag
+
+steps:
+- name: restore cache
+  image: plugins/s3-cache
+  settings:
+    endpoint:
+      from_secret: s3_endpoint
+    access_key:
+      from_secret: s3_access_key
+    secret_key:
+      from_secret: s3_secret_key
+    root: drone
+    restore: true
+
+- name: download dependencies
+  image: docker.claudiomattera.it/claudiomattera/rust:1
+  commands:
+  - cargo make fetch
+
+- name: check format
+  failure: ignore
+  image: docker.claudiomattera.it/claudiomattera/rust:1
+  commands:
+  - cargo make check-format
+
+- name: run linter
+  failure: ignore
+  image: docker.claudiomattera.it/claudiomattera/rust:1
+  commands:
+  - cargo make lint
+
+- name: build
+  image: docker.claudiomattera.it/claudiomattera/rust:1
+  commands:
+  - cargo make build
+
+- name: build tests
+  image: docker.claudiomattera.it/claudiomattera/rust:1
+  commands:
+  - cargo make build-tests
+
+- name: test
+  image: docker.claudiomattera.it/claudiomattera/rust:1
+  commands:
+  - cargo make test
+
+- name: prepare cache
+  image: docker.claudiomattera.it/claudiomattera/rust:1
+  commands:
+  - cargo make prepare-cache
+
+- name: rebuild cache
+  image: plugins/s3-cache
+  settings:
+    endpoint:
+      from_secret: s3_endpoint
+    access_key:
+      from_secret: s3_access_key
+    secret_key:
+      from_secret: s3_secret_key
+    root: drone
+    rebuild: true
+    mount:
+      - ./target
+      - ./.cargo_home
+      - ./output
+
+---
+kind: pipeline
+type: docker
+name: notification
+
+depends_on:
+- build and test
+
+trigger:
+  event:
+    include:
+    - push
+    exclude:
+    - tag
+  status:
+  - failure
+
+steps:
+- name: notification
+  image: docker.claudiomattera.it/claudiomattera/drone-gotify:1
+  settings:
+    host:
+      from_secret: gotify_host
+    token:
+      from_secret: gotify_token
+    title: >
+        ✗ Build {{drone.build.number}} failed for {{drone.repo.name}}
+    message: >
+        Commit *{{drone.commit.message | trim}}* pushed by {{drone.commit.author}} on {{drone.commit.branch}}
+
+        Failed stages:
+
+        {% for stage in drone.failed.stages | split(pat=",") %}
+        - {{ stage }}
+        {% endfor %}
+
+        {% set build_link = drone.system.proto ~ "://" ~ drone.system.host ~ "/" ~ drone.repo.owner ~ "/" ~ drone.repo.name ~ "/" ~ drone.build.number -%}
+        See the complete report at <{{ build_link }}>.
+
+###############################################################################
+
+---
+kind: pipeline
+type: docker
+name: release
+environment:
+  CARGO_INCREMENTAL: 0
+  CARGO_NET_RETRY: 10
+  CARGO_HOME: "./.cargo_home/"
+trigger:
+  event:
+  - tag
+
+steps:
+- name: restore cache
+  image: plugins/s3-cache
+  settings:
+    endpoint:
+      from_secret: s3_endpoint
+    access_key:
+      from_secret: s3_access_key
+    secret_key:
+      from_secret: s3_secret_key
+    root: drone
+    restore: true
+
+- name: download dependencies
+  image: docker.claudiomattera.it/claudiomattera/rust:1
+  commands:
+  - cargo make fetch
+
+- name: remove build artifacts
+  image: docker.claudiomattera.it/claudiomattera/rust:1
+  commands:
+  - cargo make clean-release
+
+- name: build
+  image: docker.claudiomattera.it/claudiomattera/rust:1
+  commands:
+  - cargo make build-optimized
+
+- name: strip debug information
+  image: docker.claudiomattera.it/claudiomattera/rust:1
+  commands:
+  - cargo make strip-debug-information
+
+- name: verify cartridge size
+  image: docker.claudiomattera.it/claudiomattera/rust:1
+  commands:
+  - cargo make verify-cartridge-size
+
+- name: bundle into cartridge
+  image: docker.claudiomattera.it/claudiomattera/wasm4:2
+  commands:
+  - mkdir -p output
+  - w4 bundle output/cartridge.wasm
+      --title "Wasmanoid"
+      --description "An Arkanoid clone for WASM-4 fantasy console"
+      --timestamp
+      --html ./output/cartridge.html
+
+- name: rename cartridges
+  image: docker.claudiomattera.it/claudiomattera/wasm4:2
+  commands:
+  - cp output/cartridge.wasm output/wasmanoid.wasm
+  - cp output/cartridge.html output/wasmanoid.html
+
+- name: store
+  image: plugins/s3-cache
+  settings:
+    endpoint:
+      from_secret: s3_endpoint
+    access_key:
+      from_secret: s3_access_key
+    secret_key:
+      from_secret: s3_secret_key
+    root: drone
+    rebuild: true
+    mount:
+      - ./target
+      - ./.cargo_home
+      - ./output
+
+- name: create release on gitea
+  image: plugins/gitea-release
+  settings:
+    base_url:
+      from_secret: gitea_host
+    api_key:
+      from_secret: gitea_token
+    title: "Version ${DRONE_TAG}"
+    note: Changelog.md
+    files:
+      - ./output/cartridge.html
+      - ./output/cartridge.wasm
+    checksum:
+      - sha512
+
+---
+kind: pipeline
+type: docker
+name: release notification
+
+depends_on:
+- release
+
+trigger:
+  event:
+  - tag
+  status:
+  - failure
+
+steps:
+- name: notification
+  image: docker.claudiomattera.it/claudiomattera/drone-gotify:1
+  settings:
+    host:
+      from_secret: gotify_host
+    token:
+      from_secret: gotify_token
+    title: >
+        ✗ Release build failed for {{drone.repo.name}}-{{drone.tag}}
+    message: >
+        Failed stages:
+
+        {% for stage in drone.failed.stages | split(pat=",") %}
+        - {{ stage }}
+        {% endfor %}
+
+        {% set build_link = drone.system.proto ~ "://" ~ drone.system.host ~ "/" ~ drone.repo.owner ~ "/" ~ drone.repo.name ~ "/" ~ drone.build.number -%}
+        See the complete report at <{{ build_link }}>.
+
+###############################################################################
+
+---
+kind: pipeline
+type: docker
+name: deployment on internal website
+trigger:
+  event:
+  - promote
+  target:
+  - internal
+
+steps:
+- name: fetch
+  image: plugins/s3-cache
+  settings:
+    endpoint:
+      from_secret: s3_endpoint
+    access_key:
+      from_secret: s3_access_key
+    secret_key:
+      from_secret: s3_secret_key
+    root: drone
+    restore: true
+
+- name: store
+  image: appleboy/drone-scp
+  settings:
+    host:
+      from_secret: ssh_host
+    username:
+      from_secret: ssh_username
+    key:
+      from_secret: ssh_key
+    passphrase:
+      from_secret: ssh_passphrase
+    target: /var/www/games/
+    source: ./output/wasmanoid.html
+    strip_components: 2
+
+---
+kind: pipeline
+type: docker
+name: deployment on neocities
+trigger:
+  event:
+  - promote
+  target:
+  - neocities
+
+steps:
+- name: restore cache
+  image: plugins/s3-cache
+  settings:
+    endpoint:
+      from_secret: s3_endpoint
+    access_key:
+      from_secret: s3_access_key
+    secret_key:
+      from_secret: s3_secret_key
+    root: drone
+    restore: true
+
+- name: upload to neocities
+  image: alpine
+  commands:
+  - apk update
+  - apk add curl
+  - "curl --fail --oauth2-bearer \"$API_KEY\" --form \"assets/games/wasmanoid.html=@./output/wasmanoid.html\" https://neocities.org/api/upload"
+  - "curl --fail --oauth2-bearer \"$API_KEY\" --form \"assets/games/wasmanoid.png=@./screenshot.png\" https://neocities.org/api/upload"
+
+
+---
+kind: pipeline
+type: docker
+name: deployment notification
+
+depends_on:
+- deployment on internal website
+- deployment on neocities
+
+trigger:
+  event:
+  - promote
+  status:
+  - failure
+
+steps:
+- name: notification
+  image: docker.claudiomattera.it/claudiomattera/drone-gotify:1
+  settings:
+    host:
+      from_secret: gotify_host
+    token:
+      from_secret: gotify_token
+    title: >
+        ✗ Deployment to {{drone.deploy.to}} failed for {{drone.repo.name}}-{{drone.tag}}
+    message: >
+        Failed stages:
+
+        {% for stage in drone.failed.stages | split(pat=",") %}
+        - {{ stage }}
+        {% endfor %}
+
+        {% set build_link = drone.system.proto ~ "://" ~ drone.system.host ~ "/" ~ drone.repo.owner ~ "/" ~ drone.repo.name ~ "/" ~ drone.build.number -%}
+        See the complete report at <{{ build_link }}>.
+
+###############################################################################
+
+---
+kind: pipeline
+type: docker
+name: security audit
+trigger:
+  event:
+  - cron
+  cron:
+  - security audit
+
+steps:
+- name: check security advisories
+  image: docker.claudiomattera.it/claudiomattera/rust:1
+  commands:
+  - cargo audit --deny unsound --deny yanked
+
+- name: notification
+  depends_on:
+  - check security advisories
+  when:
+    status:
+      - failure
+  image: docker.claudiomattera.it/claudiomattera/drone-gotify:1
+  settings:
+    host:
+      from_secret: gotify_host
+    token:
+      from_secret: gotify_token
+    title: >
+        ✗ Security audit failed for {{drone.repo.name}}
+    message: >
+        Dependencies of {{ drone.repo.name }} were flagged in the RustSec Advisory Database.
+
+        {% set report_link = drone.system.proto ~ "://" ~ drone.system.host ~ "/" ~ drone.repo.owner ~ "/" ~ drone.repo.name ~ "/" ~ drone.build.number -%}
+        See the complete report at <{{ report_link }}>.
